@@ -109,20 +109,22 @@ class DecisionTree(BaseEstimator):
     }
 
     def __init__(self, n_classes=None, max_depth=np.inf, min_samples_split=2, 
-                 criterion_name='gini', debug=False):
+                 criterion_name='gini', random_state=42, debug=False):
         
         self.n_classes = n_classes
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.criterion_name = criterion_name
-
+        self.random_state = random_state
+        
         self.depth = 0
         self.root = None 
         self.debug = debug
         self.ans = 0
         self.prob_ans = None
-
         
+        np.random.seed(random_state)
+
         
     def make_split(self, feature_index, threshold, X_subset, y_subset):
         """
@@ -152,7 +154,7 @@ class DecisionTree(BaseEstimator):
         """
 
         mask = X_subset[:, feature_index] < threshold
-        opposite_mask = X_subset[:, feature_index] >= threshold
+        opposite_mask = ~mask
 
         y_left = y_subset[mask]
         y_right = y_subset[opposite_mask]
@@ -193,7 +195,7 @@ class DecisionTree(BaseEstimator):
         """
 
         mask = X_subset[:, feature_index] < threshold
-        opposite_mask = X_subset[:, feature_index] >= threshold
+        opposite_mask = ~mask
         y_left = y_subset[mask]
         y_right = y_subset[opposite_mask]
         return y_left, y_right
@@ -222,10 +224,14 @@ class DecisionTree(BaseEstimator):
         """
         best_criterion_value = np.inf
         best_feature, best_threshold = 0, 0
-
-        for feature_id in range(X_subset.shape[1]):
+        feature_ids = range(X_subset.shape[1])
+        
+        if self.random_ft_subspace_sz is not None:
+            feature_ids = np.random.choice(feature_ids, size=self.random_ft_subspace_sz)
+            
+        for feature_id in feature_ids:
             features = self.feature_values[feature_id]
-
+            
             for threshold in features:
                 y_left, y_right = self.make_split_only_y(feature_id, threshold, X_subset, y_subset)
 
@@ -290,7 +296,7 @@ class DecisionTree(BaseEstimator):
         new_node.proba = np.mean(y_subset, axis=0)
         return new_node
         
-    def fit(self, X, y):
+    def fit(self, X, y, random_ft_subspace_sz = None):
         """
         Fit the model from scratch using the provided data
         
@@ -302,12 +308,17 @@ class DecisionTree(BaseEstimator):
         y : np.array of type int with shape (n_objects, 1) in classification 
                    of type float with shape (n_objects, 1) in regression 
             Column vector of class labels in classification or target values in regression
-        
+            
+        random_ft_subspace_sz : int features subspace size for "extremly random" trees 
         """
         assert len(y.shape) == 2 and len(y) == len(X), 'Wrong y shape'
-        self.criterion, self.classification = self.all_criterions[self.criterion_name]
+        assert random_ft_subspace_sz is None or random_ft_subspace_sz <= X.shape[1], \
+            'Subspace size should be less or equal to features num'
+        self.random_ft_subspace_sz = random_ft_subspace_sz 
         
+        self.criterion, self.classification = self.all_criterions[self.criterion_name]        
         self.feature_values = []
+        
         for feature_id in range(X.shape[1]):
             thresholds = np.sort(np.unique(X[:, feature_id]))
             if len(thresholds) < 50:
@@ -315,6 +326,8 @@ class DecisionTree(BaseEstimator):
             else:
                 thresholds = [thresholds[int(i * len(thresholds) / 50.)] for i in range(50)]
                 self.feature_values.append(thresholds)
+                
+        self.feature_values = np.array(self.feature_values)
         
         if self.classification:
             if self.n_classes is None:
@@ -322,12 +335,14 @@ class DecisionTree(BaseEstimator):
             y = one_hot_encode(self.n_classes, y)
 
         self.root = self.make_tree(X, y, 1)
+        
+        return self
     
     def walk(self, x, node):
         if node.isleaf:
             if not self.all_criterions[self.criterion_name][1]:
                 self.ans = node.value
-            else: 
+            else:
                 self.ans = np.argmax(node.proba)
         else:
             if x[node.feature_index] < node.value:
